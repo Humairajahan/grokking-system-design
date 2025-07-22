@@ -178,3 +178,171 @@ Client -> CDN -> S3 (if cache miss)
 - Caching Layer: Redis/Memcached. Might use for hot metadata such as User profiles, repo details, star counts.
 - Async Processing: Sending emails/notifications.
 - Monitoring
+
+# 7. SQL queries
+
+### User profiles
+
+```sql
+-- # GET /user/username/follower-count
+
+select :username, count(*) as follower_cnt
+from Followers
+where following_id = (
+        select id from Users where username = :username limit 1
+)
+
+-------------------------------------------
+
+-- # GET /user/username/followers
+
+select u.username
+from Followers f
+join Users u
+on f.follower_id = u.id
+where following_id = (
+        select id from Users where username = :username limit 1
+) order by f.created_at desc
+limit 10 offset 0
+
+-------------------------------------------
+
+-- # GET /user/username/following-count
+
+select :username, count(*) as following_cnt
+from Followers
+where follower_id = (
+        select id from Users where username = :username limit 1
+)
+
+-------------------------------------------
+
+-- # GET /user/username/following
+
+select u.username
+from Followers f
+join Users u
+on f.following_id = u.id
+where follower_id = (
+        select id from Users where username = :username limit 1
+) order by f.created_at desc
+limit 10 offset 0
+
+```
+
+### Repository
+
+```sql
+-- # GET /user/username/repositories
+
+-- Approach 1. Using joins
+select *
+from Repository r
+left join Users u
+on r.owner_id = u.id
+where u.username = :username
+order by r.updated_at desc
+limit 10 offset 10
+
+-- Approach 2. Using subquery
+with cte as (
+        select id, username
+        from Users
+        where username = :username
+        limit 1
+)
+
+select *, cte.username as owner
+from Repository r
+join cte cte
+on r.owner_id = cte.id
+order by updated_at desc
+limit 10 offset 0
+
+-------------------------------------------
+
+-- # GET /repositories/search?q=...
+
+select *
+from Repository
+where name ilike '%...%'
+```
+
+### Fork
+
+```sql
+-- # DELETE /username/repository_name/fork
+delete from Repository
+where owner_id = (
+    select id from Users where username = :username limit 1
+)
+and name = :repository_name
+and forked_from_repo_id is not null
+
+-------------------------------------------
+
+-- # GET /username/repository_name/forks
+
+with cte as (
+        select id
+        from Repository
+        where owner_id = (
+                select id from Users
+                where username = :username limit 1
+        ) and name = :repository_name
+)
+select *
+from Repository r
+join cte cte
+on r.forked_from_repo_id = cte.id
+```
+
+### Star
+
+```sql
+
+-- # GET /username/repository_name/stars
+
+with cte as (
+        select id, owner_id, name
+        from Repository
+        where owner_id = (
+                select id from Users where username = :username limit 1
+        ) and name = :repository_name
+)
+
+-- Get the number of stars
+
+select cte.name as repository_name, count(*) as starred_count
+from Stars s
+join cte cte
+on s.repository_id = cte.id
+
+-- Get the list of users who starred a repository
+
+select u.username as username
+from Stars s
+join cte cte
+on s.repository_id = cte.id
+join Users u
+on s.user_id = u.id
+order by s.created_at desc
+limit 10 offset 0
+
+-------------------------------------------
+
+-- # DELETE /username/repository_name/star
+-- An authenticated user USER is removing a star
+
+delete from Stars
+where repository_id = (
+        select id
+        from Repository
+        where owner_id = (
+                select id from Users where username = :username limit 1
+        )
+) and user_id = (
+        select id from Users where username = :USER limit 1
+)
+
+```
